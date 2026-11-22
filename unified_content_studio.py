@@ -340,18 +340,35 @@ if _original_import_draft:
 SHELL_HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Content Studio</title>
-<style>/* Visual styles live in static/app-theme.css */</style><link rel="stylesheet" href="{{ url_for('static', filename='app-theme.css') }}"></head><body>
-<div class="top"><div class="brand"><span>◆</span> Content Studio</div><div class="tagline">Pinterest publishing · Social card production</div></div>
-<nav class="tabs" aria-label="Content tools">
-<button class="tab active" data-tab="pins">Pinterest Pins</button>
-<button class="tab" data-tab="social">Social Media Posts</button>
-</nav>
+<style>/* Visual styles live in static/app-theme.css */</style><link rel="stylesheet" href="{{ url_for('static', filename='app-theme.css') }}"><style>
+.cs-header{position:sticky;top:0;z-index:50;height:60px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;padding:0 28px;background:#fff;border-bottom:1px solid #e5e9f0;box-sizing:border-box}
+.cs-brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px;color:#0f172a}
+.cs-logo{width:30px;height:30px;border-radius:9px;background:#4f46e5;color:#fff;display:grid;place-items:center;font-size:14px;box-shadow:0 4px 10px rgba(79,70,229,.3)}
+.cs-tabs{display:flex;gap:6px}
+.cs-tab{border:0;background:transparent;cursor:pointer;padding:8px 18px;border-radius:999px;font:700 14px inherit;font-family:inherit;color:#64748b;transition:background .15s,color .15s}
+.cs-tab:hover{background:#f1f5f9;color:#0f172a}
+.cs-tab.active{background:#4f46e5;color:#fff;box-shadow:0 4px 12px rgba(79,70,229,.3)}
+.cs-status{justify-self:end;display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:999px;font-size:12px;font-weight:700;background:#f1f5f9;color:#64748b}
+.cs-status i{width:8px;height:8px;border-radius:50%;background:currentColor}
+.cs-status.ok{background:#ecfdf5;color:#047857}
+.cs-status.bad{background:#fef2f2;color:#b91c1c}
+.frame-wrap{height:calc(100vh - 60px) !important}
+@media(max-width:720px){.cs-header{grid-template-columns:1fr auto;height:auto;padding:10px 16px}.cs-tabs{grid-column:1/-1;order:3;justify-content:center}.frame-wrap{height:calc(100vh - 100px) !important}}
+</style></head><body>
+<div class="cs-header" role="banner">
+  <div class="cs-brand"><span class="cs-logo">◆</span> Content Studio</div>
+  <nav class="cs-tabs" aria-label="Content tools">
+    <button class="cs-tab active" data-tab="pins">Pinterest Pins</button>
+    <button class="cs-tab" data-tab="social">Social Media Posts</button>
+  </nav>
+  <span class="cs-status" id="csStatus"><i></i><span>Checking OpenRouter…</span></span>
+</div>
 <div class="frame-wrap">
 <iframe id="pinsFrame" class="frame active" src="/pins" title="Pinterest Pins"></iframe>
 <iframe id="socialFrame" class="frame" src="/social" title="Social Media Posts"></iframe>
 </div>
 <script>
-const tabs=[...document.querySelectorAll('.tab')];
+const tabs=[...document.querySelectorAll('.cs-tab')];
 function selectTab(name){
   tabs.forEach(btn=>btn.classList.toggle('active',btn.dataset.tab===name));
   document.getElementById('pinsFrame').classList.toggle('active',name==='pins');
@@ -359,6 +376,7 @@ function selectTab(name){
   try{localStorage.setItem('content_studio_active_tab',name)}catch(e){}
 }
 tabs.forEach(btn=>btn.addEventListener('click',()=>selectTab(btn.dataset.tab)));
+fetch('/api/status').then(r=>r.json()).then(d=>{const el=document.getElementById('csStatus');el.classList.add(d.openrouter_ready?'ok':'bad');el.lastChild.textContent=d.openrouter_ready?'OpenRouter connected':'OpenRouter key missing';}).catch(()=>{const el=document.getElementById('csStatus');el.classList.add('bad');el.lastChild.textContent='Status unavailable';});
 try{const saved=localStorage.getItem('content_studio_active_tab');if(saved==='social')selectTab('social')}catch(e){}
 </script></body></html>'''
 
@@ -391,7 +409,7 @@ SOCIAL_HTML = r'''<!doctype html>
 <style>/* Visual styles live in static/app-theme.css */</style><link rel="stylesheet" href="{{ url_for('static', filename='app-theme.css') }}">
 </head>
 <body>
-<header>
+<header style="display:none">
   <div><div class="brand"><i>●</i> Social Media Posts</div><div class="sub">Create social content first. Add R2 image URLs when your images are ready.</div></div>
   <span class="pill" id="connection">Checking OpenRouter…</span>
 </header>

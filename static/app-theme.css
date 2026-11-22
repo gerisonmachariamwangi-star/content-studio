@@ -328,7 +328,7 @@ button:disabled {
   border-radius: var(--radius);
   margin: 0 0 20px;
   position: sticky;
-  top: calc(var(--header-h) + 8px);
+  top: 0;
   z-index: 20;
   box-shadow: var(--shadow);
 }
