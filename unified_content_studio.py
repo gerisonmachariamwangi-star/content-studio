@@ -729,7 +729,7 @@ function showDraft(draft){
   localStorage.setItem('social_csv_draft_id',draft.draft_id);
   $('emptyState').classList.add('hidden');
   $('contentStage').classList.remove('hidden');
-  $('imageStage').classList.toggle('hidden',!!draft.final_ready);
+  $('imageStage').classList.remove('hidden');
   $('draftRows').textContent=draft.rows.length+' rows';
   $('draftTopic').textContent=draft.topic;
   $('draftTimezone').textContent=draft.timezone;
@@ -1107,7 +1107,7 @@ def social_create_csv():
 
     try:
         schedules = pins.create_schedule(start_at, interval_hours, row_count, timezone_name)
-        generated, cached = pins.generate_campaign_content(row_count, topic, niche, cta)
+        generated, cached = pins.generate_campaign_content(row_count, topic, niche, cta, mode="social")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:

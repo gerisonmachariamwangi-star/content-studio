@@ -18,8 +18,9 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
 ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")  # load before paths are read
 RUNTIME_DIR = Path(os.getenv("CONTENT_STUDIO_TMP", "/tmp/content-studio"))
-TO_POST = RUNTIME_DIR / "ToPost"
+TO_POST = Path(os.getenv("TOPOST_DIR", "").strip() or (RUNTIME_DIR / "ToPost"))
 MANIFEST = RUNTIME_DIR / "image_urls.csv"
 CACHE_FILE = RUNTIME_DIR / "ai_metadata_cache.json"
 EXPORT_DIR = RUNTIME_DIR / "Exports" / "CSV_Drafts"
@@ -472,7 +473,7 @@ def _openrouter_request(model, api_key, system_prompt, user_prompt, row_count):
     return content_rows
 
 
-def generate_campaign_content(row_count, topic, niche, cta):
+def generate_campaign_content(row_count, topic, niche, cta, mode="pins"):
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OpenRouter API key is missing. Add OPENROUTER_API_KEY to .env.")
@@ -489,7 +490,7 @@ def generate_campaign_content(row_count, topic, niche, cta):
             models_to_try.append(candidate)
 
     cache_material = json.dumps(
-        ["campaign-csv-v4", models_to_try, row_count, topic, niche, cta],
+        ["campaign-csv-v5", mode, models_to_try, row_count, topic, niche, cta],
         ensure_ascii=False,
     )
     cache_id = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
@@ -500,21 +501,21 @@ def generate_campaign_content(row_count, topic, niche, cta):
 
     system_prompt = (
         "You are an experienced Pinterest SEO copywriter. Create useful, natural, "
-        "distinct Pinterest Pin titles and descriptions. Use the supplied topic "
-        "and niche to choose relevant search phrases naturally; do not keyword-stuff. "
+        "distinct Pinterest Pin titles and descriptions. The topic is the PRIMARY SEARCH KEYWORD "
+        "and the niche describes the audience and voice. Build every title and description around the primary keyword naturally; do not keyword-stuff. "
         "Do not invent research, search-volume figures, statistics, endorsements, "
         "guarantees, product ingredients, or factual claims. The images will be "
         "attached later, so do not claim to see or describe any image. Return valid JSON only."
     )
     user_prompt = f"""Create exactly {row_count} DIFFERENT Pinterest content rows.
 
-CAMPAIGN TOPIC: {topic}
-NICHE: {niche}
+PRIMARY KEYWORD: {topic}
+NICHE & AUDIENCE: {niche}
 OPTIONAL CTA / INSTRUCTION: {cta or 'Use a natural, low-pressure invitation only when appropriate.'}
 
 For every row provide:
-- title: engaging, search-friendly Pinterest title, maximum 100 characters.
-- description: useful, natural Pinterest description, maximum 500 characters.
+- title: search-friendly Pinterest title, maximum 100 characters (aim for 40-70). Put the primary keyword, or a natural close variant, within the first 40 characters. Mix formats across rows: numbered list, how-to, myths vs facts, question, benefit-led. Each title must describe one clear, visual idea, because the image prompt is generated from the title alone.
+- description: useful, natural Pinterest description, maximum 500 characters. Use the primary keyword naturally in the first sentence, write for the stated audience, and include a related keyword or two without repeating the same phrase.
 - keywords: 4 to 6 relevant keyword phrases (suggestions, not verified search-volume data).
 
 Make each row meaningfully different in angle, wording, and keyword emphasis. Avoid
@@ -525,6 +526,20 @@ Do not make medical, financial, or other unsupported promises.
 Return ONLY this JSON object, with exactly {row_count} objects in rows:
 {{"rows":[{{"title":"...","description":"...","keywords":["...","..."]}}]}}
 """
+
+    if mode == "social":
+        # Social posts keep the original, caption-driven wording.
+        system_prompt = system_prompt.replace(
+            "The topic is the PRIMARY SEARCH KEYWORD and the niche describes the audience and voice. Build every title and description around the primary keyword naturally; do not keyword-stuff. ",
+            "Use the supplied topic and niche to choose relevant search phrases naturally; do not keyword-stuff. ")
+        user_prompt = user_prompt.replace(f"PRIMARY KEYWORD: {topic}", f"CAMPAIGN TOPIC: {topic}")
+        user_prompt = user_prompt.replace(f"NICHE & AUDIENCE: {niche}", f"NICHE: {niche}")
+        user_prompt = user_prompt.replace(
+            "- title: search-friendly Pinterest title, maximum 100 characters (aim for 40-70). Put the primary keyword, or a natural close variant, within the first 40 characters. Mix formats across rows: numbered list, how-to, myths vs facts, question, benefit-led. Each title must describe one clear, visual idea, because the image prompt is generated from the title alone.",
+            "- title: engaging, search-friendly Pinterest title, maximum 100 characters.")
+        user_prompt = user_prompt.replace(
+            "- description: useful, natural Pinterest description, maximum 500 characters. Use the primary keyword naturally in the first sentence, write for the stated audience, and include a related keyword or two without repeating the same phrase.",
+            "- description: useful, natural Pinterest description, maximum 500 characters.")
 
     content_rows = None
     model_errors = []
@@ -793,8 +808,8 @@ HTML = r'''<!doctype html>
         <div class="field"><label for="rowCount">Number of rows</label><input id="rowCount" type="number" min="1" max="50" value="5" required></div>
         <div class="field"><label for="interval">Interval (hours)</label><input id="interval" type="number" min="0.25" max="720" step="0.25" value="3" required></div>
       </div>
-      <div class="field"><label for="topic">Topic / Campaign</label><input id="topic" maxlength="180" placeholder="e.g. The Unspoken Truths About Love" required></div>
-      <div class="field"><label for="niche">Niche</label><input id="niche" maxlength="180" placeholder="e.g. Emotional Intelligence & Relationship Psychology" required></div>
+      <div class="field"><label for="topic">Primary keyword (what people search on Pinterest)</label><input id="topic" maxlength="180" placeholder="e.g. signs of emotional intelligence in a relationship" required></div>
+      <div class="field"><label for="niche">Niche &amp; audience</label><input id="niche" maxlength="180" placeholder="e.g. Relationship psychology · women 25-40" required></div>
             <div class="field"><label for="boardName">Pinterest board name</label><input id="boardName" maxlength="180" placeholder="e.g. Relationship Psychology" required><div class="small muted" style="margin-top:5px">Enter any board name. If it doesn't exist, it will be created when you import the CSV.</div></div>
       <div class="field"><label for="destination">Destination URL (optional)</label><input id="destination" type="url" placeholder="https://example.com/your-page"></div>
       <div class="field"><label for="cta">Optional CTA / extra writing instructions</label><input id="cta" maxlength="300" placeholder="e.g. Encourage readers to explore the full guide"></div>
@@ -973,7 +988,7 @@ function showDraft(draft){
   localStorage.setItem('pinterest_csv_draft_id',draft.draft_id);
   $('emptyState').classList.add('hidden');
   $('contentStage').classList.remove('hidden');
-  $('imageStage').classList.toggle('hidden',!!draft.final_ready);
+  $('imageStage').classList.remove('hidden');
   $('draftRows').textContent=draft.rows.length+' rows';
   $('draftTopic').textContent=draft.topic;
   $('draftTimezone').textContent=draft.timezone;
