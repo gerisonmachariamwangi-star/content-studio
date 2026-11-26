@@ -1,15 +1,9 @@
 {
   "version": 2,
   "builds": [
-    {
-      "src": "unified_content_studio.py",
-      "use": "@vercel/python"
-    }
+    { "src": "api/index.py", "use": "@vercel/python" }
   ],
   "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "unified_content_studio.py"
-    }
+    { "src": "/(.*)", "dest": "/api/index.py" }
   ]
 }

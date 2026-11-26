@@ -18,9 +18,8 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template_string, request, send_file
 
 ROOT = Path(__file__).resolve().parent
-load_dotenv(ROOT / ".env")  # load before paths are read
 RUNTIME_DIR = Path(os.getenv("CONTENT_STUDIO_TMP", "/tmp/content-studio"))
-TO_POST = Path(os.getenv("TOPOST_DIR", "").strip() or (RUNTIME_DIR / "ToPost"))
+TO_POST = RUNTIME_DIR / "ToPost"
 MANIFEST = RUNTIME_DIR / "image_urls.csv"
 CACHE_FILE = RUNTIME_DIR / "ai_metadata_cache.json"
 EXPORT_DIR = RUNTIME_DIR / "Exports" / "CSV_Drafts"
@@ -31,6 +30,32 @@ load_dotenv(ROOT / ".env")
 import upload_images
 from pymongo import MongoClient, DESCENDING
 from pymongo.errors import PyMongoError
+from botocore.config import Config as BotoConfig
+import boto3
+
+def create_r2_presigned_upload(filename, content_type):
+    """Create a short-lived browser PUT URL for Cloudflare R2."""
+    required = ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "R2_ENDPOINT_URL", "R2_PUBLIC_URL"]
+    missing = [name for name in required if not os.getenv(name, "").strip()]
+    if missing:
+        raise RuntimeError("Missing R2 settings: " + ", ".join(missing))
+    safe_name = Path(filename).name
+    if not safe_name or Path(safe_name).suffix.lower() not in ALLOWED_EXTENSIONS:
+        raise ValueError("Unsupported image file type.")
+    client = boto3.client(
+        "s3", endpoint_url=os.environ["R2_ENDPOINT_URL"].rstrip("/"),
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        region_name="auto", config=BotoConfig(signature_version="s3v4")
+    )
+    key = f"media/{uuid.uuid4().hex}_{safe_name}"
+    content_type = content_type if content_type and content_type.startswith("image/") else "application/octet-stream"
+    url = client.generate_presigned_url(
+        "put_object", Params={"Bucket": os.environ["R2_BUCKET_NAME"], "Key": key, "ContentType": content_type}, ExpiresIn=900
+    )
+    public_url = os.environ["R2_PUBLIC_URL"].rstrip("/") + "/" + quote(key, safe="/-_.~")
+    return {"upload_url": url, "media_url": public_url, "key": key, "content_type": content_type}
+
 
 _MONGO_CLIENT = None
 
@@ -72,6 +97,35 @@ DRAFT_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "") or "local-development-only-change-me"
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
+
+@app.post("/api/media/presign")
+def api_media_presign():
+    data = request.get_json(silent=True) or {}
+    filename = data.get("filename", "")
+    content_type = data.get("content_type", "")
+    try:
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            return jsonify({"error": "Invalid filename."}), 400
+        existing = read_manifest().get(filename, "")
+        if existing and existing.startswith(os.getenv("R2_PUBLIC_URL", "https://INVALID").rstrip("/") + "/"):
+            return jsonify({"already_hosted": True, "media_url": existing})
+        return jsonify({"already_hosted": False, **create_r2_presigned_upload(filename, content_type)})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+@app.post("/api/media/confirm")
+def api_media_confirm():
+    data = request.get_json(silent=True) or {}
+    filename, media_url = data.get("filename"), data.get("media_url")
+    public_base = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
+    if not isinstance(filename, str) or Path(filename).name != filename or not isinstance(media_url, str) or not public_base or not media_url.startswith(public_base + "/"):
+        return jsonify({"error": "Invalid uploaded media details."}), 400
+    try:
+        manifest = read_manifest(); manifest[filename] = media_url; save_manifest(manifest)
+        return jsonify({"ok": True, "media_url": media_url})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 503
+
 
 
 def ensure_campaign_tracking_column():
@@ -473,7 +527,7 @@ def _openrouter_request(model, api_key, system_prompt, user_prompt, row_count):
     return content_rows
 
 
-def generate_campaign_content(row_count, topic, niche, cta, mode="pins"):
+def generate_campaign_content(row_count, topic, niche, cta):
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OpenRouter API key is missing. Add OPENROUTER_API_KEY to .env.")
@@ -490,7 +544,7 @@ def generate_campaign_content(row_count, topic, niche, cta, mode="pins"):
             models_to_try.append(candidate)
 
     cache_material = json.dumps(
-        ["campaign-csv-v5", mode, models_to_try, row_count, topic, niche, cta],
+        ["campaign-csv-v4", models_to_try, row_count, topic, niche, cta],
         ensure_ascii=False,
     )
     cache_id = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
@@ -501,21 +555,21 @@ def generate_campaign_content(row_count, topic, niche, cta, mode="pins"):
 
     system_prompt = (
         "You are an experienced Pinterest SEO copywriter. Create useful, natural, "
-        "distinct Pinterest Pin titles and descriptions. The topic is the PRIMARY SEARCH KEYWORD "
-        "and the niche describes the audience and voice. Build every title and description around the primary keyword naturally; do not keyword-stuff. "
+        "distinct Pinterest Pin titles and descriptions. Use the supplied topic "
+        "and niche to choose relevant search phrases naturally; do not keyword-stuff. "
         "Do not invent research, search-volume figures, statistics, endorsements, "
         "guarantees, product ingredients, or factual claims. The images will be "
         "attached later, so do not claim to see or describe any image. Return valid JSON only."
     )
     user_prompt = f"""Create exactly {row_count} DIFFERENT Pinterest content rows.
 
-PRIMARY KEYWORD: {topic}
-NICHE & AUDIENCE: {niche}
+CAMPAIGN TOPIC: {topic}
+NICHE: {niche}
 OPTIONAL CTA / INSTRUCTION: {cta or 'Use a natural, low-pressure invitation only when appropriate.'}
 
 For every row provide:
-- title: search-friendly Pinterest title, maximum 100 characters (aim for 40-70). Put the primary keyword, or a natural close variant, within the first 40 characters. Mix formats across rows: numbered list, how-to, myths vs facts, question, benefit-led. Each title must describe one clear, visual idea, because the image prompt is generated from the title alone.
-- description: useful, natural Pinterest description, maximum 500 characters. Use the primary keyword naturally in the first sentence, write for the stated audience, and include a related keyword or two without repeating the same phrase.
+- title: engaging, search-friendly Pinterest title, maximum 100 characters.
+- description: useful, natural Pinterest description, maximum 500 characters.
 - keywords: 4 to 6 relevant keyword phrases (suggestions, not verified search-volume data).
 
 Make each row meaningfully different in angle, wording, and keyword emphasis. Avoid
@@ -526,20 +580,6 @@ Do not make medical, financial, or other unsupported promises.
 Return ONLY this JSON object, with exactly {row_count} objects in rows:
 {{"rows":[{{"title":"...","description":"...","keywords":["...","..."]}}]}}
 """
-
-    if mode == "social":
-        # Social posts keep the original, caption-driven wording.
-        system_prompt = system_prompt.replace(
-            "The topic is the PRIMARY SEARCH KEYWORD and the niche describes the audience and voice. Build every title and description around the primary keyword naturally; do not keyword-stuff. ",
-            "Use the supplied topic and niche to choose relevant search phrases naturally; do not keyword-stuff. ")
-        user_prompt = user_prompt.replace(f"PRIMARY KEYWORD: {topic}", f"CAMPAIGN TOPIC: {topic}")
-        user_prompt = user_prompt.replace(f"NICHE & AUDIENCE: {niche}", f"NICHE: {niche}")
-        user_prompt = user_prompt.replace(
-            "- title: search-friendly Pinterest title, maximum 100 characters (aim for 40-70). Put the primary keyword, or a natural close variant, within the first 40 characters. Mix formats across rows: numbered list, how-to, myths vs facts, question, benefit-led. Each title must describe one clear, visual idea, because the image prompt is generated from the title alone.",
-            "- title: engaging, search-friendly Pinterest title, maximum 100 characters.")
-        user_prompt = user_prompt.replace(
-            "- description: useful, natural Pinterest description, maximum 500 characters. Use the primary keyword naturally in the first sentence, write for the stated audience, and include a related keyword or two without repeating the same phrase.",
-            "- description: useful, natural Pinterest description, maximum 500 characters.")
 
     content_rows = None
     model_errors = []
@@ -774,15 +814,15 @@ HTML = r'''<!doctype html>
   </section>
 
   <section class="card hidden" id="imageStage">
-    <div class="step"><div class="stepnum">2</div><div><h2>Add images and insert their R2 URLs</h2><p>Copy your still images into the ToPost folder, then scan. Videos are ignored for now.</p></div></div>
-    <div class="row" style="flex-wrap:wrap"><div><strong id="imageInstruction">Select images for this campaign.</strong><div class="small muted">Files are listed alphabetically. The selected order maps to CSV rows from top to bottom.</div></div><button class="secondary" id="scanImages">Scan ToPost folder</button></div>
+    <div class="step"><div class="stepnum">2</div><div><h2>Add images and insert their R2 URLs</h2><p>Choose images directly from your computer. Selected images upload securely to Cloudflare R2.</p></div></div>
+    <div class="row" style="flex-wrap:wrap"><div><strong id="imageInstruction">Select images for this campaign.</strong><div class="small muted">Files are listed alphabetically. The selected order maps to CSV rows from top to bottom.</div></div><input id="imageFiles" type="file" accept=".jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,image/*" multiple hidden><button class="secondary" id="scanImages">Choose images</button></div>
     <div class="statline"><span class="count" id="availableCount">No scan yet</span><span class="count" id="selectedCount">0 selected</span></div>
     <details class="preview-details" id="imagePreview">
-      <summary><span id="imagePreviewLabel">Choose images from ToPost</span><span class="summary-hint">The selection order matches the CSV rows</span></summary>
-      <div id="imageList" class="image-list" style="padding:10px 12px"><div class="empty">Scan ToPost when your campaign images are ready.</div></div>
+      <summary><span id="imagePreviewLabel">Choose images from your computer</span><span class="summary-hint">The selection order matches the CSV rows</span></summary>
+      <div id="imageList" class="image-list" style="padding:10px 12px"><div class="empty">Choose your campaign images to begin.</div></div>
     </details>
     <div class="actions" style="margin-top:12px"><button class="success" id="insertUrls" disabled>Insert URLs & complete CSV</button></div>
-    <div class="small muted" style="margin-top:8px">Only selected images are uploaded. Existing R2 URLs are reused; new images are uploaded once and added to image_urls.csv.</div>
+    <div class="small muted" style="margin-top:8px">Selected images upload directly from your browser to R2. Existing R2 URLs are reused when the filename matches.</div>
   </section>
 
   <section class="card hidden" id="finalStage">
@@ -808,8 +848,8 @@ HTML = r'''<!doctype html>
         <div class="field"><label for="rowCount">Number of rows</label><input id="rowCount" type="number" min="1" max="50" value="5" required></div>
         <div class="field"><label for="interval">Interval (hours)</label><input id="interval" type="number" min="0.25" max="720" step="0.25" value="3" required></div>
       </div>
-      <div class="field"><label for="topic">Primary keyword (what people search on Pinterest)</label><input id="topic" maxlength="180" placeholder="e.g. signs of emotional intelligence in a relationship" required></div>
-      <div class="field"><label for="niche">Niche &amp; audience</label><input id="niche" maxlength="180" placeholder="e.g. Relationship psychology · women 25-40" required></div>
+      <div class="field"><label for="topic">Topic / Campaign</label><input id="topic" maxlength="180" placeholder="e.g. The Unspoken Truths About Love" required></div>
+      <div class="field"><label for="niche">Niche</label><input id="niche" maxlength="180" placeholder="e.g. Emotional Intelligence & Relationship Psychology" required></div>
             <div class="field"><label for="boardName">Pinterest board name</label><input id="boardName" maxlength="180" placeholder="e.g. Relationship Psychology" required><div class="small muted" style="margin-top:5px">Enter any board name. If it doesn't exist, it will be created when you import the CSV.</div></div>
       <div class="field"><label for="destination">Destination URL (optional)</label><input id="destination" type="url" placeholder="https://example.com/your-page"></div>
       <div class="field"><label for="cta">Optional CTA / extra writing instructions</label><input id="cta" maxlength="300" placeholder="e.g. Encourage readers to explore the full guide"></div>
@@ -988,7 +1028,7 @@ function showDraft(draft){
   localStorage.setItem('pinterest_csv_draft_id',draft.draft_id);
   $('emptyState').classList.add('hidden');
   $('contentStage').classList.remove('hidden');
-  $('imageStage').classList.remove('hidden');
+  $('imageStage').classList.toggle('hidden',!!draft.final_ready);
   $('draftRows').textContent=draft.rows.length+' rows';
   $('draftTopic').textContent=draft.topic;
   $('draftTimezone').textContent=draft.timezone;
@@ -1086,7 +1126,7 @@ async function createCsv(event){
     if(!response.ok)throw new Error(data.error||'CSV generation failed.');
     await loadCampaigns();
     if(data.board_created){await loadBoards();}
-    showDraft(data.draft);availableImages=[];$('imageList').innerHTML='<div class="empty">Copy your campaign images into ToPost, then scan the folder.</div>';$('availableCount').textContent='Not scanned';$('selectedCount').textContent='0 selected';$('insertUrls').disabled=true;
+    showDraft(data.draft);availableImages=[];$('imageList').innerHTML='<div class="empty">Choose your campaign images from your computer.</div>';$('availableCount').textContent='Not scanned';$('selectedCount').textContent='0 selected';$('insertUrls').disabled=true;
     closeModal();
     const boardNotice=data.board_created?` Pinterest board “${data.draft.board}” was created.`:'';
     showMessage(`Created a new saved campaign with ${data.draft.rows.length} rows.${boardNotice} Your earlier campaigns remain in the library.`,'ok');
@@ -1106,32 +1146,37 @@ function updateSelectedCount(){
   const selected=document.querySelectorAll('.image-choice:checked').length;
   $('selectedCount').textContent=`${selected} selected`;
   $('insertUrls').disabled=!activeDraft||selected!==activeDraft.rows.length;
-  if(activeDraft&&selected!==activeDraft.rows.length){$('insertUrls').title=`Select exactly ${activeDraft.rows.length} images.`;}else{$('insertUrls').title='';}
+  $('insertUrls').title=activeDraft&&selected!==activeDraft.rows.length?`Select exactly ${activeDraft.rows.length} images.`:'';
 }
 function renderImageChoices(){
-  if(!availableImages.length){$('imageList').innerHTML='<div class="empty">No supported images found in ToPost. Add JPG, JPEG, PNG or another supported still-image file and scan again.</div>';updateSelectedCount();return;}
+  if(!availableImages.length){$('imageList').innerHTML='<div class="empty">Choose JPG, PNG, WebP or another supported image from your computer.</div>';updateSelectedCount();return;}
   const needed=activeDraft.rows.length;
   $('imageList').innerHTML=availableImages.map((image,index)=>`<label class="image-item"><input type="checkbox" class="image-choice" data-index="${index}" ${index<needed?'checked':''}><span class="image-name">${escapeHtml(image.filename)}</span><span class="image-state ${image.hosted?'':'pending'}">${image.hosted?'Already on R2':'Will upload to R2'}</span></label>`).join('');
-  document.querySelectorAll('.image-choice').forEach(input=>input.addEventListener('change',updateSelectedCount));
-  updateSelectedCount();
+  document.querySelectorAll('.image-choice').forEach(input=>input.addEventListener('change',updateSelectedCount));updateSelectedCount();
 }
 async function scanImages(){
-  if(!activeDraft)return;clearMessage();$('scanImages').disabled=true;$('scanImages').textContent='Scanning…';
-  try{
-    const response=await fetch(`/api/drafts/${activeDraft.draft_id}/scan-images`);const data=await response.json();
-    if(!response.ok)throw new Error(data.error||'Could not scan ToPost folder.');
-    availableImages=data.images||[];
-    $('availableCount').textContent=`${availableImages.length} image(s) found`;
-    $('imagePreviewLabel').textContent=`Review available images · ${availableImages.length} found`;
-    $('imagePreview').open=true;
-    renderImageChoices();
-    if(availableImages.length<activeDraft.rows.length){showMessage(`This CSV needs ${activeDraft.rows.length} images, but ToPost currently has ${availableImages.length}. Add ${activeDraft.rows.length-availableImages.length} more supported image(s).`,'warn');}
-    else if(availableImages.length>activeDraft.rows.length){showMessage(`Found ${availableImages.length} images. Select exactly ${activeDraft.rows.length}. Files are listed alphabetically; selected order matches CSV row order.`,'ok');}
-    else{showMessage(`Found exactly ${availableImages.length} images. Review the order, then insert the URLs.`,'ok');}
-  }catch(error){showMessage(error.message,'error');}
-  finally{$('scanImages').disabled=false;$('scanImages').textContent='Scan ToPost folder';}
+  if(!activeDraft)return;clearMessage();$('imageFiles').click();
 }
+$('imageFiles').addEventListener('change',()=>{
+  const files=[...($('imageFiles').files||[])].filter(file=>/\.(jpe?g|png|webp|bmp|tiff?)$/i.test(file.name));
+  availableImages=files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'})).map(file=>({filename:file.name,hosted:false,file}));
+  $('availableCount').textContent=`${availableImages.length} image(s) selected`;
+  $('imagePreviewLabel').textContent=`Review selected images · ${availableImages.length} found`;$('imagePreview').open=true;renderImageChoices();
+  if(availableImages.length<activeDraft.rows.length)showMessage(`This CSV needs ${activeDraft.rows.length} images, but you selected ${availableImages.length}.`,'warn');
+  else if(availableImages.length>activeDraft.rows.length)showMessage(`Selected ${availableImages.length} images. Choose exactly ${activeDraft.rows.length}; order is alphabetical.`,'ok');
+  else showMessage(`Selected exactly ${availableImages.length} images. Review the order, then insert the URLs.`,'ok');
+});
 function chosenImages(){return [...document.querySelectorAll('.image-choice:checked')].map(el=>availableImages[Number(el.dataset.index)]).filter(Boolean);}
+async function uploadBrowserImage(image){
+  const presignResponse=await fetch('/api/media/presign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:image.filename,content_type:image.file.type||'application/octet-stream'})});
+  const presign=await presignResponse.json();if(!presignResponse.ok)throw new Error(presign.error||`Could not prepare ${image.filename}.`);
+  if(presign.already_hosted)return {filename:image.filename,media_url:presign.media_url};
+  const put=await fetch(presign.upload_url,{method:'PUT',headers:{'Content-Type':presign.content_type},body:image.file});
+  if(!put.ok)throw new Error(`R2 upload failed for ${image.filename} (HTTP ${put.status}). Check your R2 bucket CORS settings.`);
+  const confirm=await fetch('/api/media/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:image.filename,media_url:presign.media_url})});
+  const result=await confirm.json();if(!confirm.ok)throw new Error(result.error||`Could not save ${image.filename} to the media library.`);
+  return {filename:image.filename,media_url:presign.media_url};
+}
 function renderFinalRows(rows){
   $('finalRows').innerHTML=rows.map(row=>`<tr><td>${escapeHtml(row.filename)}</td><td><a href="${escapeHtml(row.media_url)}" target="_blank" rel="noopener">Open R2 URL</a></td><td class="titlecell">${escapeHtml(row.title)}</td><td>${escapeHtml(row.scheduled_at)}<br><span class="muted">${escapeHtml(row.timezone)}</span></td></tr>`).join('');
 }
@@ -1140,7 +1185,9 @@ async function insertImageUrls(){
   if(selected.length!==activeDraft.rows.length){showMessage(`Select exactly ${activeDraft.rows.length} images before continuing.`,'error');return;}
   const button=$('insertUrls');button.disabled=true;button.textContent='Uploading and inserting URLs…';
   try{
-    const response=await fetch(`/api/drafts/${activeDraft.draft_id}/insert-images`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filenames:selected.map(image=>image.filename)})});
+    const uploaded=[];for(let i=0;i<selected.length;i++){button.textContent=`Uploading image ${i+1} of ${selected.length}…`;uploaded.push(await uploadBrowserImage(selected[i]));}
+    button.textContent='Inserting URLs…';
+    const response=await fetch(`/api/drafts/${activeDraft.draft_id}/insert-images`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({images:uploaded})});
     const data=await response.json();if(!response.ok)throw new Error(data.error||'Could not insert image URLs.');
     activeDraft=data.draft;showDraft(activeDraft);$('imagePreview').open=false;setWorkflowActive('export');showMessage(`Inserted ${data.inserted} verified R2 image URL(s). Your final CSV is ready to download.`,'ok');
     $('finalStage').scrollIntoView({behavior:'smooth',block:'start'});
@@ -1505,42 +1552,24 @@ def api_insert_images(draft_id):
         return jsonify({"error": "Image URLs have already been inserted for this draft."}), 409
 
     data = request.get_json(silent=True) or {}
-    filenames = data.get("filenames")
+    images = data.get("images")
     needed = len(draft.get("rows", []))
-    if not isinstance(filenames, list) or len(filenames) != needed:
+    if not isinstance(images, list) or len(images) != needed:
         return jsonify({"error": f"Select exactly {needed} images."}), 400
-    if len(set(filenames)) != len(filenames):
-        return jsonify({"error": "The same image cannot be selected more than once."}), 400
+    filenames = [item.get("filename") for item in images if isinstance(item, dict)]
+    if len(filenames) != needed or len(set(filenames)) != needed:
+        return jsonify({"error": "Invalid or duplicate image selection."}), 400
 
-    selected_paths = []
-    for filename in filenames:
-        if not isinstance(filename, str) or Path(filename).name != filename:
-            return jsonify({"error": "Invalid image filename."}), 400
-        image_path = TO_POST / filename
-        if not image_path.is_file() or image_path.suffix.lower() not in ALLOWED_EXTENSIONS:
-            return jsonify({"error": f"Supported image not found in ToPost: {filename}"}), 400
-        selected_paths.append(image_path)
-
-    uploaded = {}
+    public_base = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
     final_rows = []
     try:
-        with UPLOAD_LOCK:
-            uploaded = read_manifest()
-            for index, (row, image_path) in enumerate(zip(draft["rows"], selected_paths), start=1):
-                media_url = uploaded.get(image_path.name, "")
-                if not media_url:
-                    print(f"Uploading selected campaign image to R2: {image_path.name}")
-                    media_url, size, content_type = upload_images.upload_image(image_path)
-                    uploaded[image_path.name] = media_url
-                    save_manifest(uploaded)
-                    print(f"R2 upload complete: {image_path.name} ({size} bytes, {content_type})")
-
-                if not media_url.startswith("https://"):
-                    raise RuntimeError(f"Invalid public R2 URL for {image_path.name}.")
-
-                final_rows.append({
+        for index, (row, item) in enumerate(zip(draft["rows"], images), start=1):
+            filename, media_url = item.get("filename"), item.get("media_url")
+            if not isinstance(filename, str) or Path(filename).name != filename or not isinstance(media_url, str) or not public_base or not media_url.startswith(public_base + "/"):
+                raise ValueError("An image URL is missing or does not belong to your configured R2 public domain.")
+            final_rows.append({
                     "row_number": index,
-                    "filename": image_path.name,
+                    "filename": filename,
                     "media_url": media_url,
                     "title": row["title"],
                     "description": row["description"],
