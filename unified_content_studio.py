@@ -480,21 +480,21 @@ SOCIAL_HTML = r'''<!doctype html>
   </section>
 
   <section class="card hidden" id="imageStage">
-    <div class="step"><div class="stepnum">2</div><div><h2>Add media and insert their R2 URLs</h2><p>Use still images from ToPost, or use MP4 videos generated from ToPost/videos/.</p></div></div>
+    <div class="step"><div class="stepnum">2</div><div><h2>Add media and insert their R2 URLs</h2><p>Choose still images from your computer, or use MP4 videos generated into ToPost/videos/ when running locally.</p></div></div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
       <button class="secondary media-tab active" id="tabImages" onclick="switchMediaTab('images')">🖼 Still Images</button>
       <button class="secondary media-tab" id="tabVideos" onclick="switchMediaTab('videos')">🎬 Videos (MP4)</button>
     </div>
 
     <div id="imagePanel">
-      <div class="row" style="flex-wrap:wrap"><div><strong id="imageInstruction">Select images for this campaign.</strong><div class="small muted">Files are listed alphabetically. The selected order maps to CSV rows from top to bottom.</div></div><button class="secondary" id="scanImages">Scan ToPost folder</button></div>
+      <div class="row" style="flex-wrap:wrap"><div><strong id="imageInstruction">Select images for this campaign.</strong><div class="small muted">Files are listed alphabetically. The selected order maps to CSV rows from top to bottom.</div></div><input id="imageFiles" type="file" accept=".jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,image/*" multiple hidden><button class="secondary" id="scanImages">Choose images</button></div>
       <div class="statline"><span class="count" id="availableCount">No scan yet</span><span class="count" id="selectedCount">0 selected</span></div>
       <details class="preview-details" id="imagePreview">
-        <summary><span id="imagePreviewLabel">Choose images from ToPost</span><span class="summary-hint">The selection order matches the CSV rows</span></summary>
-        <div id="imageList" class="image-list" style="padding:10px 12px"><div class="empty">Scan ToPost when your campaign images are ready.</div></div>
+        <summary><span id="imagePreviewLabel">Choose images from your computer</span><span class="summary-hint">The selection order matches the CSV rows</span></summary>
+        <div id="imageList" class="image-list" style="padding:10px 12px"><div class="empty">Choose your campaign images to begin.</div></div>
       </details>
       <div class="actions" style="margin-top:12px"><button class="success" id="insertUrls" disabled>Insert URLs &amp; complete CSV</button></div>
-      <div class="small muted" style="margin-top:8px">Only selected images are uploaded. Existing R2 URLs are reused; new images are uploaded once and added to image_urls.csv.</div>
+      <div class="small muted" style="margin-top:8px">Selected images upload directly from your browser to R2. Existing R2 URLs are reused when the filename matches.</div>
     </div>
 
     <div id="videoPanel" style="display:none">
@@ -784,7 +784,7 @@ async function createCsv(event){
     const data=await response.json();if(!response.ok)throw new Error(data.error||'CSV generation failed.');
     await loadCampaigns();
     // no board reload needed for social tab
-    showDraft(data.draft);availableImages=[];$('imageList').innerHTML='<div class="empty">Copy your campaign images into ToPost, then scan the folder.</div>';$('availableCount').textContent='Not scanned';$('selectedCount').textContent='0 selected';$('insertUrls').disabled=true;
+    showDraft(data.draft);availableImages=[];$('imageList').innerHTML='<div class="empty">Choose your campaign images from your computer.</div>';$('availableCount').textContent='Not scanned';$('selectedCount').textContent='0 selected';$('insertUrls').disabled=true;
     closeModal();
     const boardNotice=data.board_created?` Pinterest board "${data.draft.board}" was created.`:'';
     showMessage(`Created a new saved campaign with ${data.draft.rows.length} rows.${boardNotice} Your earlier campaigns remain in the library.`,'ok');
@@ -800,29 +800,36 @@ function updateSelectedCount(){
   if(activeDraft&&selected!==activeDraft.rows.length){$('insertUrls').title=`Select exactly ${activeDraft.rows.length} images.`;}else{$('insertUrls').title='';}
 }
 function renderImageChoices(){
-  if(!availableImages.length){$('imageList').innerHTML='<div class="empty">No supported images found in ToPost. Add JPG, JPEG, PNG or another supported still-image file and scan again.</div>';updateSelectedCount();return;}
+  if(!availableImages.length){$('imageList').innerHTML='<div class="empty">Choose JPG, PNG, WebP or another supported image from your computer.</div>';updateSelectedCount();return;}
   const needed=activeDraft.rows.length;
   $('imageList').innerHTML=availableImages.map((image,index)=>`<label class="image-item"><input type="checkbox" class="image-choice" data-index="${index}" ${index<needed?'checked':''}><span class="image-name">${escapeHtml(image.filename)}</span><span class="image-state ${image.hosted?'':'pending'}">${image.hosted?'Already on R2':'Will upload to R2'}</span></label>`).join('');
   document.querySelectorAll('.image-choice').forEach(input=>input.addEventListener('change',updateSelectedCount));
   updateSelectedCount();
 }
 async function scanImages(){
-  if(!activeDraft)return;clearMessage();$('scanImages').disabled=true;$('scanImages').textContent='Scanning…';
-  try{
-    const response=await fetch(`/api/social/campaigns/${activeDraft.draft_id}/scan-images`);const data=await response.json();
-    if(!response.ok)throw new Error(data.error||'Could not scan ToPost folder.');
-    availableImages=data.images||[];
-    $('availableCount').textContent=`${availableImages.length} image(s) found`;
-    $('imagePreviewLabel').textContent=`Review available images · ${availableImages.length} found`;
-    $('imagePreview').open=true;
-    renderImageChoices();
-    if(availableImages.length<activeDraft.rows.length){showMessage(`This CSV needs ${activeDraft.rows.length} images, but ToPost currently has ${availableImages.length}. Add ${activeDraft.rows.length-availableImages.length} more supported image(s).`,'warn');}
-    else if(availableImages.length>activeDraft.rows.length){showMessage(`Found ${availableImages.length} images. Select exactly ${activeDraft.rows.length}. Files are listed alphabetically; selected order matches CSV row order.`,'ok');}
-    else{showMessage(`Found exactly ${availableImages.length} images. Review the order, then insert the URLs.`,'ok');}
-  }catch(error){showMessage(error.message,'error');}
-  finally{$('scanImages').disabled=false;$('scanImages').textContent='Scan ToPost folder';}
+  if(!activeDraft)return;clearMessage();$('imageFiles').value='';$('imageFiles').click();
 }
+$('imageFiles').addEventListener('change',()=>{
+  if(!activeDraft)return;
+  const files=[...($('imageFiles').files||[])].filter(file=>/\.(jpe?g|png|webp|bmp|tiff?)$/i.test(file.name));
+  availableImages=files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'})).map(file=>({filename:file.name,hosted:false,file}));
+  $('availableCount').textContent=`${availableImages.length} image(s) selected`;
+  $('imagePreviewLabel').textContent=`Review selected images · ${availableImages.length} found`;$('imagePreview').open=true;renderImageChoices();
+  if(availableImages.length<activeDraft.rows.length)showMessage(`This CSV needs ${activeDraft.rows.length} images, but you selected ${availableImages.length}.`,'warn');
+  else if(availableImages.length>activeDraft.rows.length)showMessage(`Selected ${availableImages.length} images. Choose exactly ${activeDraft.rows.length}; the first ${activeDraft.rows.length} are ticked in alphabetical order.`,'ok');
+  else showMessage(`Selected exactly ${availableImages.length} images. Review the order, then insert the URLs.`,'ok');
+});
 function chosenImages(){return [...document.querySelectorAll('.image-choice:checked')].map(el=>availableImages[Number(el.dataset.index)]).filter(Boolean);}
+async function uploadBrowserImage(image){
+  const presignResponse=await fetch('/api/media/presign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:image.filename,content_type:image.file.type||'application/octet-stream'})});
+  const presign=await presignResponse.json();if(!presignResponse.ok)throw new Error(presign.error||`Could not prepare ${image.filename}.`);
+  if(presign.already_hosted)return {filename:image.filename,media_url:presign.media_url};
+  const put=await fetch(presign.upload_url,{method:'PUT',headers:{'Content-Type':presign.content_type},body:image.file});
+  if(!put.ok)throw new Error(`R2 upload failed for ${image.filename} (HTTP ${put.status}). Check your R2 bucket CORS settings.`);
+  const confirm=await fetch('/api/media/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:image.filename,media_url:presign.media_url})});
+  const result=await confirm.json();if(!confirm.ok)throw new Error(result.error||`Could not save ${image.filename} to the media library.`);
+  return {filename:image.filename,media_url:presign.media_url};
+}
 function renderFinalRows(rows){
   $('finalRows').innerHTML=rows.map(row=>`<tr><td>${escapeHtml(row.filename)}</td><td><a href="${escapeHtml(row.media_url)}" target="_blank" rel="noopener">Open R2 URL</a></td><td class="titlecell">${escapeHtml(row.title)}</td><td>${escapeHtml(row.scheduled_at)}<br><span class="muted">${escapeHtml(row.timezone)}</span></td></tr>`).join('');
 }
@@ -831,7 +838,9 @@ async function insertImageUrls(){
   if(selected.length!==activeDraft.rows.length){showMessage(`Select exactly ${activeDraft.rows.length} images before continuing.`,'error');return;}
   const button=$('insertUrls');button.disabled=true;button.textContent='Uploading and inserting URLs…';
   try{
-    const response=await fetch(`/api/social/campaigns/${activeDraft.draft_id}/insert-images`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filenames:selected.map(image=>image.filename)})});
+    const uploaded=[];for(let i=0;i<selected.length;i++){button.textContent=`Uploading image ${i+1} of ${selected.length}…`;uploaded.push(await uploadBrowserImage(selected[i]));}
+    button.textContent='Inserting URLs…';
+    const response=await fetch(`/api/social/campaigns/${activeDraft.draft_id}/insert-images`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({images:uploaded})});
     const data=await response.json();if(!response.ok)throw new Error(data.error||'Could not insert image URLs.');
     activeDraft=data.draft;showDraft(activeDraft);$('imagePreview').open=false;setWorkflowActive('export');showMessage(`Inserted ${data.inserted} verified R2 image URL(s). Your final CSV is ready to download.`,'ok');
     $('finalStage').scrollIntoView({behavior:'smooth',block:'start'});
@@ -1409,50 +1418,29 @@ def social_insert_images(draft_id):
         return jsonify({"error": "Image URLs have already been inserted for this draft."}), 409
 
     data = request.get_json(silent=True) or {}
-    filenames = data.get("filenames")
+    images = data.get("images")
     needed = len(draft.get("rows", []))
-    if not isinstance(filenames, list) or len(filenames) != needed:
+    if not isinstance(images, list) or len(images) != needed:
         return jsonify({"error": f"Select exactly {needed} images."}), 400
-    if len(set(filenames)) != len(filenames):
-        return jsonify({"error": "The same image cannot be selected more than once."}), 400
+    filenames = [item.get("filename") for item in images if isinstance(item, dict)]
+    if len(filenames) != needed or len(set(filenames)) != needed:
+        return jsonify({"error": "Invalid or duplicate image selection."}), 400
 
-    selected_paths = []
-    for filename in filenames:
-        if not isinstance(filename, str) or Path(filename).name != filename:
-            return jsonify({"error": "Invalid image filename."}), 400
-        image_path = pins.TO_POST / filename
-        if not image_path.is_file() or image_path.suffix.lower() not in pins.ALLOWED_EXTENSIONS:
-            return jsonify({"error": f"Supported image not found in ToPost: {filename}"}), 400
-        selected_paths.append(image_path)
-
+    public_base = os.getenv("R2_PUBLIC_URL", "").rstrip("/")
     final_rows = []
     try:
-        with pins.UPLOAD_LOCK:
-            uploaded = pins.read_manifest()
-            for index, (row, image_path) in enumerate(zip(draft["rows"], selected_paths), start=1):
-                media_url = uploaded.get(image_path.name, "")
-                if not media_url:
-                    print(f"Uploading social campaign image to R2: {image_path.name}")
-                    media_url, size, content_type = pins.upload_images.upload_image(image_path)
-                    uploaded[image_path.name] = media_url
-                    pins.save_manifest(uploaded)
-                    print(f"R2 upload complete: {image_path.name} ({size} bytes, {content_type})")
-                if not media_url.startswith("https://"):
-                    raise RuntimeError(f"Invalid public R2 URL for {image_path.name}.")
-                final_rows.append({
-                    "row_number": index,
-                    "filename": image_path.name,
-                    "media_url": media_url,
-                    "title": row["title"],
-                    "description": row["description"],
-                    "caption": row.get("caption", "") or row["description"],
-                    "keywords": row.get("keywords", []),
-                    "destination_url": pins.make_unique_destination_url(
-                        draft.get("destination_url", ""), row.get("title", "")
-                    ),
-                    "scheduled_at": row["scheduled_at"],
-                    "timezone": draft["timezone"],
-                })
+        for index, (row, item) in enumerate(zip(draft["rows"], images), start=1):
+            filename, media_url = item.get("filename"), item.get("media_url")
+            if not isinstance(filename, str) or Path(filename).name != filename or not isinstance(media_url, str) or not public_base or not media_url.startswith(public_base + "/"):
+                raise ValueError("An image URL is missing or does not belong to your configured R2 public domain.")
+            final_rows.append({
+                "row_number": index, "filename": filename, "media_url": media_url,
+                "title": row["title"], "description": row["description"],
+                "caption": row.get("caption", "") or row["description"],
+                "keywords": row.get("keywords", []),
+                "destination_url": pins.make_unique_destination_url(draft.get("destination_url", ""), row.get("title", "")),
+                "scheduled_at": row["scheduled_at"], "timezone": draft["timezone"],
+            })
         draft["final_rows"] = final_rows
         draft["final_ready"] = True
         draft["finalized_at"] = datetime.now(timezone.utc).isoformat()
