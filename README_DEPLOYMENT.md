@@ -4,7 +4,7 @@ This package is configured for content generation and campaign management only:
 - Pinterest Pins content generation, image-prompt downloads and CSV downloads
 - Social Media content generation, image-prompt downloads and CSV downloads
 - Campaign Library with MongoDB persistence, archive and restore
-- Browser-to-R2 image uploads using short-lived presigned URLs; media manifest stored in MongoDB
+- Cloudflare R2 configuration retained for media upload features
 
 Pinterest OAuth, publishing, scheduler imports and background workers are disabled.
 
@@ -43,27 +43,3 @@ git push -u origin main
 If `origin` already exists, use `git remote set-url origin https://github.com/gerisonmachariamwangi-star/content-studio.git` instead of `git remote add origin`.
 
 Do not commit `.env` or paste secrets into source files.
-
-## Browser image upload setup
-The image picker uploads directly from the browser to Cloudflare R2 using short-lived presigned URLs. Configure your R2 bucket CORS policy to allow PUT requests from your Vercel domain and `http://localhost:5001`, with allowed header `Content-Type` and exposed header `ETag`. Do not expose R2 secret keys in frontend code.
-
-### Cloudflare R2 CORS
-In Cloudflare Dashboard → R2 → your bucket → Settings → CORS Policy, add a rule like this (keep the production origin and localhost origins):
-
-```json
-[
-  {
-    "AllowedOrigins": [
-      "https://content-studio-ten-tawny.vercel.app",
-      "http://localhost:5001",
-      "http://127.0.0.1:5001"
-    ],
-    "AllowedMethods": ["PUT", "GET", "HEAD"],
-    "AllowedHeaders": ["Content-Type"],
-    "ExposeHeaders": ["ETag"],
-    "MaxAgeSeconds": 3600
-  }
-]
-```
-
-The image workflow now uses the browser file picker and presigned R2 uploads. The browser never receives the R2 access key or secret. The existing video-generation workflow still uses local `ToPost/videos/` files and is not converted to browser-based upload in this revision.
