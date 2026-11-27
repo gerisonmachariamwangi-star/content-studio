@@ -304,7 +304,7 @@ def _build_social_image_prompts(rows: list) -> str:
             "9:16 portrait. Plain lightly textured paper background, warm off-white to light grey. "
             "Text only — no illustrations, no borders, no decorations. "
             "ALL text uses the same old-school Courier typewriter monospace font throughout — bold weight for the headline, regular weight for the body. "
-            "First sentence is the headline in large bold Courier typewriter font WITH a bright solid yellow marker highlight painted behind it. "
+            "First sentence is the headline in large bold Courier typewriter font. Highlighting is used sparingly: choose only the 2 to 4 most meaningful key words, or one short key phrase, that carry the message of the quote, and paint a bright solid yellow marker highlight behind just those words. The highlighted words can be in the headline or in the body, wherever the key idea sits, and the highlight must never cover the whole headline or whole sentences. Keep the highlighted words to roughly 15 to 20 percent of all the text so the rest stays plain and the layout looks neat and easy to read. "
             "Remaining lines in regular Courier typewriter font, same typeface, left-aligned, generous line spacing, easy to read. "
             "Consistent single font family from top to bottom. Minimal and clean. No logos, no URLs, no watermarks."
         )
@@ -696,7 +696,7 @@ function buildImagePrompts(rows){
     let desc=String(row.caption||row.description||'').replace(/\s+/g,' ').trim();
     if(!desc)return '';
     desc=desc.replace(/[.!?]+$/,'').trim()+'.';
-    return `${desc}\n9:16 portrait. Plain lightly textured paper background, warm off-white to light grey. Text only — no illustrations, no borders, no decorations. ALL text uses the same old-school Courier typewriter monospace font throughout — bold weight for the headline, regular weight for the body. First sentence is the headline in large bold Courier typewriter font WITH a bright solid yellow marker highlight painted behind it. Remaining lines in regular Courier typewriter font, same typeface, left-aligned, generous line spacing, easy to read. Consistent single font family from top to bottom. Minimal and clean. No logos, no URLs, no watermarks.`;
+    return `${desc}\n9:16 portrait. Plain lightly textured paper background, warm off-white to light grey. Text only — no illustrations, no borders, no decorations. ALL text uses the same old-school Courier typewriter monospace font throughout — bold weight for the headline, regular weight for the body. First sentence is the headline in large bold Courier typewriter font. Highlighting is used sparingly: choose only the 2 to 4 most meaningful key words, or one short key phrase, that carry the message of the quote, and paint a bright solid yellow marker highlight behind just those words. The highlighted words can be in the headline or in the body, wherever the key idea sits, and the highlight must never cover the whole headline or whole sentences. Keep the highlighted words to roughly 15 to 20 percent of all the text so the rest stays plain and the layout looks neat and easy to read. Remaining lines in regular Courier typewriter font, same typeface, left-aligned, generous line spacing, easy to read. Consistent single font family from top to bottom. Minimal and clean. No logos, no URLs, no watermarks.`;
   }).filter(Boolean).join('\n\n');
 }
 function renderImagePrompts(draft){
